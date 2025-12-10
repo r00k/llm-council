@@ -14,6 +14,37 @@ from .council import run_full_council, generate_conversation_title, stage1_colle
 
 app = FastAPI(title="LLM Council API")
 
+
+def build_conversation_history(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """
+    Build conversation history from stored messages.
+
+    Extracts previous question/verdict pairs for context in follow-up questions.
+
+    Args:
+        messages: List of stored messages (user and assistant)
+
+    Returns:
+        List of dicts with 'question' and 'verdict' keys
+    """
+    history = []
+    i = 0
+    while i < len(messages) - 1:  # -1 because we don't include the current question
+        msg = messages[i]
+        if msg.get("role") == "user":
+            # Look for the corresponding assistant message
+            if i + 1 < len(messages):
+                next_msg = messages[i + 1]
+                if next_msg.get("role") == "assistant" and next_msg.get("stage3"):
+                    history.append({
+                        "question": msg.get("content", ""),
+                        "verdict": next_msg["stage3"].get("response", "")
+                    })
+                    i += 2
+                    continue
+        i += 1
+    return history
+
 # Enable CORS for local development
 app.add_middleware(
     CORSMiddleware,
@@ -79,6 +110,15 @@ async def get_conversation(conversation_id: str):
     return conversation
 
 
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    """Delete a specific conversation."""
+    deleted = storage.delete_conversation(conversation_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"status": "deleted", "id": conversation_id}
+
+
 @app.post("/api/conversations/{conversation_id}/message")
 async def send_message(conversation_id: str, request: SendMessageRequest):
     """
@@ -93,6 +133,9 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     # Check if this is the first message
     is_first_message = len(conversation["messages"]) == 0
 
+    # Build conversation history from previous messages (before adding new user message)
+    conversation_history = build_conversation_history(conversation["messages"])
+
     # Add user message
     storage.add_user_message(conversation_id, request.content)
 
@@ -101,9 +144,10 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         title = await generate_conversation_title(request.content)
         storage.update_conversation_title(conversation_id, title)
 
-    # Run the 3-stage council process
+    # Run the 3-stage council process with conversation history
     stage1_results, stage2_results, stage3_result, metadata = await run_full_council(
-        request.content
+        request.content,
+        conversation_history if conversation_history else None
     )
 
     # Add assistant message with all stages
@@ -137,6 +181,10 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     # Check if this is the first message
     is_first_message = len(conversation["messages"]) == 0
 
+    # Build conversation history from previous messages (before adding new user message)
+    conversation_history = build_conversation_history(conversation["messages"])
+    history_for_council = conversation_history if conversation_history else None
+
     async def event_generator():
         try:
             # Add user message
@@ -149,18 +197,18 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
 
             # Stage 1: Collect responses
             yield f"data: {json.dumps({'type': 'stage1_start'})}\n\n"
-            stage1_results = await stage1_collect_responses(request.content)
+            stage1_results = await stage1_collect_responses(request.content, history_for_council)
             yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results})}\n\n"
 
             # Stage 2: Collect rankings
             yield f"data: {json.dumps({'type': 'stage2_start'})}\n\n"
-            stage2_results, label_to_model = await stage2_collect_rankings(request.content, stage1_results)
+            stage2_results, label_to_model = await stage2_collect_rankings(request.content, stage1_results, history_for_council)
             aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
             yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': {'label_to_model': label_to_model, 'aggregate_rankings': aggregate_rankings}})}\n\n"
 
             # Stage 3: Synthesize final answer
             yield f"data: {json.dumps({'type': 'stage3_start'})}\n\n"
-            stage3_result = await stage3_synthesize_final(request.content, stage1_results, stage2_results)
+            stage3_result = await stage3_synthesize_final(request.content, stage1_results, stage2_results, history_for_council)
             yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result})}\n\n"
 
             # Wait for title generation if it was started
