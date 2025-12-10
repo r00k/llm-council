@@ -61,6 +61,9 @@ function App() {
 
   const handleSelectConversation = (id) => {
     setCurrentConversationId(id);
+    // Clear loading state when switching conversations
+    // This allows starting new queries while others process in background
+    setIsLoading(false);
   };
 
   const handleDeleteConversation = async (id) => {
