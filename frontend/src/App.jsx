@@ -121,69 +121,64 @@ function App() {
         // Skip UI updates if user navigated away from this conversation
         const isStillViewing = currentConversationIdRef.current === targetConversationId;
 
+        // Helper to safely update the last assistant message
+        // Returns prev unchanged if the message structure isn't what we expect
+        // (e.g., user navigated away and back, reloading partial data from backend)
+        const safeUpdateLastAssistant = (prev, updateFn) => {
+          if (!prev?.messages?.length) return prev;
+          const messages = [...prev.messages];
+          const lastMsg = messages[messages.length - 1];
+          // Only update if it's an assistant message with the expected structure
+          if (lastMsg?.role !== 'assistant' || !lastMsg?.loading) return prev;
+          updateFn(lastMsg);
+          return { ...prev, messages };
+        };
+
         switch (eventType) {
           case 'stage1_start':
             if (!isStillViewing) return;
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.loading.stage1 = true;
-              return { ...prev, messages };
-            });
+            setCurrentConversation((prev) => safeUpdateLastAssistant(prev, (msg) => {
+              msg.loading.stage1 = true;
+            }));
             break;
 
           case 'stage1_complete':
             if (!isStillViewing) return;
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.stage1 = event.data;
-              lastMsg.loading.stage1 = false;
-              return { ...prev, messages };
-            });
+            setCurrentConversation((prev) => safeUpdateLastAssistant(prev, (msg) => {
+              msg.stage1 = event.data;
+              msg.loading.stage1 = false;
+            }));
             break;
 
           case 'stage2_start':
             if (!isStillViewing) return;
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.loading.stage2 = true;
-              return { ...prev, messages };
-            });
+            setCurrentConversation((prev) => safeUpdateLastAssistant(prev, (msg) => {
+              msg.loading.stage2 = true;
+            }));
             break;
 
           case 'stage2_complete':
             if (!isStillViewing) return;
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.stage2 = event.data;
-              lastMsg.metadata = event.metadata;
-              lastMsg.loading.stage2 = false;
-              return { ...prev, messages };
-            });
+            setCurrentConversation((prev) => safeUpdateLastAssistant(prev, (msg) => {
+              msg.stage2 = event.data;
+              msg.metadata = event.metadata;
+              msg.loading.stage2 = false;
+            }));
             break;
 
           case 'stage3_start':
             if (!isStillViewing) return;
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.loading.stage3 = true;
-              return { ...prev, messages };
-            });
+            setCurrentConversation((prev) => safeUpdateLastAssistant(prev, (msg) => {
+              msg.loading.stage3 = true;
+            }));
             break;
 
           case 'stage3_complete':
             if (!isStillViewing) return;
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.stage3 = event.data;
-              lastMsg.loading.stage3 = false;
-              return { ...prev, messages };
-            });
+            setCurrentConversation((prev) => safeUpdateLastAssistant(prev, (msg) => {
+              msg.stage3 = event.data;
+              msg.loading.stage3 = false;
+            }));
             break;
 
           case 'title_complete':
