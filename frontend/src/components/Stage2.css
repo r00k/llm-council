@@ -2,6 +2,25 @@
   background: #fafafa;
 }
 
+.stage2 .stage-title.collapsible {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: color 0.2s;
+}
+
+.stage2 .stage-title.collapsible:hover {
+  color: #4a90e2;
+}
+
+.stage2 .collapse-icon {
+  font-size: 12px;
+  color: #666;
+  transition: transform 0.2s;
+}
+
 .stage2 h4 {
   margin: 20px 0 8px 0;
   color: #333;
