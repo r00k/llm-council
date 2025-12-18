@@ -231,6 +231,7 @@ function App() {
       <ChatInterface
         conversation={currentConversation}
         onSendMessage={handleSendMessage}
+        onRetry={handleSendMessage}
         isLoading={isLoading}
       />
     </div>

@@ -8,17 +8,18 @@ import './ChatInterface.css';
 export default function ChatInterface({
   conversation,
   onSendMessage,
+  onRetry,
   isLoading,
 }) {
   const [input, setInput] = useState('');
-  const messagesEndRef = useRef(null);
+  const lastResponseRef = useRef(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const scrollToLastResponse = () => {
+    lastResponseRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   useEffect(() => {
-    scrollToBottom();
+    scrollToLastResponse();
   }, [conversation]);
 
   const handleSubmit = (e) => {
@@ -57,15 +58,25 @@ export default function ChatInterface({
             <p>Ask a question to consult the LLM Council</p>
           </div>
         ) : (
-          conversation.messages.map((msg, index) => (
+          conversation.messages.map((msg, index, arr) => (
             <div key={index} className="message-group">
               {msg.role === 'user' ? (
                 <div className="user-message">
                   <div className="message-label">You</div>
-                  <div className="message-content">
-                    <div className="markdown-content">
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                  <div className="user-message-row">
+                    <div className="message-content">
+                      <div className="markdown-content">
+                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      </div>
                     </div>
+                    <button
+                      className="retry-button"
+                      onClick={() => onRetry(msg.content)}
+                      disabled={isLoading}
+                      title="Re-run council analysis"
+                    >
+                      ↻ Retry
+                    </button>
                   </div>
                 </div>
               ) : (
@@ -103,7 +114,12 @@ export default function ChatInterface({
                       <span>Running Stage 3: Final synthesis...</span>
                     </div>
                   )}
-                  {msg.stage3 && <Stage3 finalResponse={msg.stage3} />}
+                  {msg.stage3 && (
+                    <Stage3
+                      finalResponse={msg.stage3}
+                      ref={lastResponseRef}
+                    />
+                  )}
                 </div>
               )}
             </div>
@@ -116,8 +132,6 @@ export default function ChatInterface({
             <span>Consulting the council...</span>
           </div>
         )}
-
-        <div ref={messagesEndRef} />
       </div>
 
       <form className="input-form" onSubmit={handleSubmit}>

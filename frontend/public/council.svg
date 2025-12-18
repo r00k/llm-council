@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Three overlapping circles representing the council -->
+  <circle cx="10" cy="12" r="8" fill="#4a90e2" opacity="0.9"/>
+  <circle cx="22" cy="12" r="8" fill="#50c878" opacity="0.9"/>
+  <circle cx="16" cy="22" r="8" fill="#9b59b6" opacity="0.9"/>
+</svg>
