@@ -1,21 +1,9 @@
-"""JSON-based storage for conversations."""
+"""SQLite-based storage for conversations."""
 
 import json
-import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-from pathlib import Path
-from .config import DATA_DIR
-
-
-def ensure_data_dir():
-    """Ensure the data directory exists."""
-    Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
-
-
-def get_conversation_path(conversation_id: str) -> str:
-    """Get the file path for a conversation."""
-    return os.path.join(DATA_DIR, f"{conversation_id}.json")
+from .db import get_connection
 
 
 def create_conversation(conversation_id: str) -> Dict[str, Any]:
@@ -28,21 +16,24 @@ def create_conversation(conversation_id: str) -> Dict[str, Any]:
     Returns:
         New conversation dict
     """
-    ensure_data_dir()
+    created_at = datetime.utcnow().isoformat()
 
-    conversation = {
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO conversations (id, created_at, title) VALUES (?, ?, ?)",
+            (conversation_id, created_at, "New Conversation")
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
         "id": conversation_id,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": created_at,
         "title": "New Conversation",
         "messages": []
     }
-
-    # Save to file
-    path = get_conversation_path(conversation_id)
-    with open(path, 'w') as f:
-        json.dump(conversation, f, indent=2)
-
-    return conversation
 
 
 def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
@@ -55,27 +46,72 @@ def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     Returns:
         Conversation dict or None if not found
     """
-    path = get_conversation_path(conversation_id)
+    conn = get_connection()
+    try:
+        # Get conversation metadata
+        cursor = conn.execute(
+            "SELECT id, created_at, title FROM conversations WHERE id = ?",
+            (conversation_id,)
+        )
+        row = cursor.fetchone()
 
-    if not os.path.exists(path):
-        return None
+        if row is None:
+            return None
 
-    with open(path, 'r') as f:
-        return json.load(f)
+        conversation = {
+            "id": row["id"],
+            "created_at": row["created_at"],
+            "title": row["title"],
+            "messages": []
+        }
+
+        # Get messages
+        cursor = conn.execute(
+            """
+            SELECT role, content, stage1_json, stage2_json, stage3_json, metadata_json
+            FROM messages
+            WHERE conversation_id = ?
+            ORDER BY id ASC
+            """,
+            (conversation_id,)
+        )
+
+        for msg_row in cursor.fetchall():
+            if msg_row["role"] == "user":
+                conversation["messages"].append({
+                    "role": "user",
+                    "content": msg_row["content"]
+                })
+            else:  # assistant
+                message = {
+                    "role": "assistant",
+                    "stage1": json.loads(msg_row["stage1_json"]),
+                    "stage2": json.loads(msg_row["stage2_json"]),
+                    "stage3": json.loads(msg_row["stage3_json"])
+                }
+                if msg_row["metadata_json"]:
+                    message["metadata"] = json.loads(msg_row["metadata_json"])
+                conversation["messages"].append(message)
+
+        return conversation
+
+    finally:
+        conn.close()
 
 
 def save_conversation(conversation: Dict[str, Any]):
     """
     Save a conversation to storage.
 
+    Note: This function exists for API compatibility but is not needed
+    with SQLite as individual operations already persist to the database.
+
     Args:
         conversation: Conversation dict to save
     """
-    ensure_data_dir()
-
-    path = get_conversation_path(conversation['id'])
-    with open(path, 'w') as f:
-        json.dump(conversation, f, indent=2)
+    # With SQLite, we save incrementally via add_user_message and add_assistant_message
+    # This function is kept for API compatibility but doesn't need to do anything
+    pass
 
 
 def list_conversations() -> List[Dict[str, Any]]:
@@ -85,26 +121,31 @@ def list_conversations() -> List[Dict[str, Any]]:
     Returns:
         List of conversation metadata dicts
     """
-    ensure_data_dir()
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT c.id, c.created_at, c.title, COUNT(m.id) as message_count
+            FROM conversations c
+            LEFT JOIN messages m ON c.id = m.conversation_id
+            GROUP BY c.id
+            ORDER BY c.created_at DESC
+            """
+        )
 
-    conversations = []
-    for filename in os.listdir(DATA_DIR):
-        if filename.endswith('.json'):
-            path = os.path.join(DATA_DIR, filename)
-            with open(path, 'r') as f:
-                data = json.load(f)
-                # Return metadata only
-                conversations.append({
-                    "id": data["id"],
-                    "created_at": data["created_at"],
-                    "title": data.get("title", "New Conversation"),
-                    "message_count": len(data["messages"])
-                })
+        conversations = []
+        for row in cursor.fetchall():
+            conversations.append({
+                "id": row["id"],
+                "created_at": row["created_at"],
+                "title": row["title"],
+                "message_count": row["message_count"]
+            })
 
-    # Sort by creation time, newest first
-    conversations.sort(key=lambda x: x["created_at"], reverse=True)
+        return conversations
 
-    return conversations
+    finally:
+        conn.close()
 
 
 def add_user_message(conversation_id: str, content: str):
@@ -115,16 +156,24 @@ def add_user_message(conversation_id: str, content: str):
         conversation_id: Conversation identifier
         content: User message content
     """
-    conversation = get_conversation(conversation_id)
-    if conversation is None:
-        raise ValueError(f"Conversation {conversation_id} not found")
+    conn = get_connection()
+    try:
+        # Verify conversation exists
+        cursor = conn.execute(
+            "SELECT id FROM conversations WHERE id = ?",
+            (conversation_id,)
+        )
+        if cursor.fetchone() is None:
+            raise ValueError(f"Conversation {conversation_id} not found")
 
-    conversation["messages"].append({
-        "role": "user",
-        "content": content
-    })
-
-    save_conversation(conversation)
+        # Insert message
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
+            (conversation_id, "user", content)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def add_assistant_message(
@@ -144,22 +193,35 @@ def add_assistant_message(
         stage3: Final synthesized response
         metadata: Optional metadata including label_to_model mapping
     """
-    conversation = get_conversation(conversation_id)
-    if conversation is None:
-        raise ValueError(f"Conversation {conversation_id} not found")
+    conn = get_connection()
+    try:
+        # Verify conversation exists
+        cursor = conn.execute(
+            "SELECT id FROM conversations WHERE id = ?",
+            (conversation_id,)
+        )
+        if cursor.fetchone() is None:
+            raise ValueError(f"Conversation {conversation_id} not found")
 
-    message = {
-        "role": "assistant",
-        "stage1": stage1,
-        "stage2": stage2,
-        "stage3": stage3
-    }
-    if metadata:
-        message["metadata"] = metadata
-
-    conversation["messages"].append(message)
-
-    save_conversation(conversation)
+        # Insert message
+        conn.execute(
+            """
+            INSERT INTO messages
+            (conversation_id, role, stage1_json, stage2_json, stage3_json, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                conversation_id,
+                "assistant",
+                json.dumps(stage1),
+                json.dumps(stage2),
+                json.dumps(stage3),
+                json.dumps(metadata) if metadata else None
+            )
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def update_conversation_title(conversation_id: str, title: str):
@@ -170,12 +232,24 @@ def update_conversation_title(conversation_id: str, title: str):
         conversation_id: Conversation identifier
         title: New title for the conversation
     """
-    conversation = get_conversation(conversation_id)
-    if conversation is None:
-        raise ValueError(f"Conversation {conversation_id} not found")
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE conversations SET title = ? WHERE id = ?",
+            (title, conversation_id)
+        )
+        conn.commit()
 
-    conversation["title"] = title
-    save_conversation(conversation)
+        # Verify it was updated
+        cursor = conn.execute(
+            "SELECT id FROM conversations WHERE id = ?",
+            (conversation_id,)
+        )
+        if cursor.fetchone() is None:
+            raise ValueError(f"Conversation {conversation_id} not found")
+
+    finally:
+        conn.close()
 
 
 def delete_conversation(conversation_id: str) -> bool:
@@ -188,10 +262,13 @@ def delete_conversation(conversation_id: str) -> bool:
     Returns:
         True if deleted, False if not found
     """
-    path = get_conversation_path(conversation_id)
-
-    if not os.path.exists(path):
-        return False
-
-    os.remove(path)
-    return True
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "DELETE FROM conversations WHERE id = ?",
+            (conversation_id,)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
