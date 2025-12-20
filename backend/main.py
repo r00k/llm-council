@@ -3,16 +3,22 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any
 import uuid
 import json
 import asyncio
+import os
+from pathlib import Path
 
 from . import storage
 from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
 
 app = FastAPI(title="LLM Council API")
+
+# Get the frontend build directory
+FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 
 
 def build_conversation_history(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
@@ -45,10 +51,14 @@ def build_conversation_history(messages: List[Dict[str, Any]]) -> List[Dict[str,
         i += 1
     return history
 
-# Enable CORS for local development
+# Enable CORS for local development and production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "*"  # Allow all origins in production (served from same domain)
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -248,6 +258,13 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     )
 
 
+# Mount static files for production (frontend build)
+if FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="static")
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    # Use PORT environment variable if available (Railway sets this)
+    port = int(os.environ.get("PORT", 8001))
+    uvicorn.run(app, host="0.0.0.0", port=port)

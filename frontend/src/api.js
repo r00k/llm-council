@@ -2,7 +2,10 @@
  * API client for the LLM Council backend.
  */
 
-const API_BASE = 'http://localhost:8001';
+// Use current origin in production, localhost in development
+const API_BASE = window.location.hostname === 'localhost'
+  ? 'http://localhost:8001'
+  : window.location.origin;
 
 export const api = {
   /**
