@@ -8,4 +8,4 @@ cmds = [
 ]
 
 [start]
-cmd = "/opt/venv/bin/python3 -m backend.main"
+cmd = "python3 -m backend.main"
