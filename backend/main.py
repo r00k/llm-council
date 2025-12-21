@@ -1,5 +1,6 @@
 """FastAPI backend for LLM Council."""
 
+import base64
 import secrets
 from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,6 +44,39 @@ def verify_auth(credentials: HTTPBasicCredentials = Depends(security)):
             headers={"WWW-Authenticate": "Basic"},
         )
     return True
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Require auth for all routes except health check."""
+    # Skip auth for health check endpoint
+    if request.url.path == "/" and request.method == "GET":
+        # Check if this is an API health check or static file request
+        # Health check is only for the root path with no accept header for HTML
+        accept = request.headers.get("accept", "")
+        if "text/html" not in accept:
+            return await call_next(request)
+
+    # Skip auth if no password is set (local dev)
+    if not AUTH_PASSWORD:
+        return await call_next(request)
+
+    # Check for Basic auth header
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Basic "):
+        try:
+            credentials = base64.b64decode(auth_header[6:]).decode("utf-8")
+            _, password = credentials.split(":", 1)
+            if secrets.compare_digest(password.encode(), AUTH_PASSWORD.encode()):
+                return await call_next(request)
+        except Exception:
+            pass
+
+    # Return 401 to trigger browser's Basic auth prompt
+    return Response(
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="LLM Council"'},
+    )
 
 # Get the frontend build directory
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
