@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["python310", "nodejs_20", "npm"]
+
+[phases.install]
+cmds = [
+    "cd frontend && npm install && npm run build && cd ..",
+    "python -m venv --copies /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt"
+]
+
+[start]
+cmd = "python3 -m backend.main"
