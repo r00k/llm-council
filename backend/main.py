@@ -2,6 +2,7 @@
 
 import base64
 import secrets
+import time
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -22,6 +23,36 @@ app = FastAPI(title="LLM Council API")
 # Auth password from environment variable
 AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD")
 
+# Rate limiting: track failed auth attempts by IP
+# {ip: [timestamp1, timestamp2, ...]}
+failed_attempts: Dict[str, List[float]] = {}
+RATE_LIMIT_WINDOW = 900  # 15 minutes
+RATE_LIMIT_MAX_ATTEMPTS = 5
+
+
+def is_rate_limited(ip: str) -> bool:
+    """Check if an IP is rate limited due to too many failed attempts."""
+    now = time.time()
+    if ip not in failed_attempts:
+        return False
+    # Clean old attempts outside the window
+    failed_attempts[ip] = [t for t in failed_attempts[ip] if now - t < RATE_LIMIT_WINDOW]
+    return len(failed_attempts[ip]) >= RATE_LIMIT_MAX_ATTEMPTS
+
+
+def record_failed_attempt(ip: str):
+    """Record a failed auth attempt for an IP."""
+    now = time.time()
+    if ip not in failed_attempts:
+        failed_attempts[ip] = []
+    failed_attempts[ip].append(now)
+
+
+def clear_failed_attempts(ip: str):
+    """Clear failed attempts after successful auth."""
+    if ip in failed_attempts:
+        del failed_attempts[ip]
+
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
@@ -38,6 +69,18 @@ async def auth_middleware(request: Request, call_next):
     if not AUTH_PASSWORD:
         return await call_next(request)
 
+    # Get client IP (check X-Forwarded-For for proxies like Railway)
+    client_ip = request.headers.get("x-forwarded-for", request.client.host or "unknown")
+    if "," in client_ip:
+        client_ip = client_ip.split(",")[0].strip()
+
+    # Check rate limiting
+    if is_rate_limited(client_ip):
+        return Response(
+            status_code=429,
+            content="Too many failed attempts. Try again in 15 minutes.",
+        )
+
     # Check for Basic auth header
     auth_header = request.headers.get("authorization", "")
     if auth_header.startswith("Basic "):
@@ -45,9 +88,13 @@ async def auth_middleware(request: Request, call_next):
             credentials = base64.b64decode(auth_header[6:]).decode("utf-8")
             _, password = credentials.split(":", 1)
             if secrets.compare_digest(password.encode(), AUTH_PASSWORD.encode()):
+                clear_failed_attempts(client_ip)
                 return await call_next(request)
         except Exception:
             pass
+
+    # Record failed attempt
+    record_failed_attempt(client_ip)
 
     # Return 401 to trigger browser's Basic auth prompt
     return Response(
