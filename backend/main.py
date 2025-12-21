@@ -58,12 +58,8 @@ def clear_failed_attempts(ip: str):
 async def auth_middleware(request: Request, call_next):
     """Require auth for all routes except health check."""
     # Skip auth for health check endpoint
-    if request.url.path == "/" and request.method == "GET":
-        # Check if this is an API health check or static file request
-        # Health check is only for the root path with no accept header for HTML
-        accept = request.headers.get("accept", "")
-        if "text/html" not in accept:
-            return await call_next(request)
+    if request.url.path == "/health":
+        return await call_next(request)
 
     # Skip auth if no password is set (local dev)
     if not AUTH_PASSWORD:
@@ -176,8 +172,8 @@ class Conversation(BaseModel):
     messages: List[Dict[str, Any]]
 
 
-@app.get("/")
-async def root():
+@app.get("/health")
+async def health():
     """Health check endpoint."""
     return {"status": "ok", "service": "LLM Council API"}
 
