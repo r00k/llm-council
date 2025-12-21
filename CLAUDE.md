@@ -2,6 +2,18 @@
 
 This file contains technical details, architectural decisions, and important implementation notes for future development sessions.
 
+## Quick Commands
+
+**Always use `uv run` for Python commands** (system Python doesn't have dependencies):
+
+```bash
+# Start the backend server
+uv run python -m backend.main
+
+# Run tests
+uv run python test_storage.py
+```
+
 ## Project Overview
 
 LLM Council is a 3-stage deliberation system where multiple LLMs collaboratively answer user questions. The key innovation is anonymized peer review in Stage 2, preventing models from playing favorites.
