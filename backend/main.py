@@ -1,9 +1,11 @@
 """FastAPI backend for LLM Council."""
 
-from fastapi import FastAPI, HTTPException
+import secrets
+from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 from typing import List, Dict, Any
 import uuid
@@ -16,6 +18,31 @@ from . import storage
 from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
 
 app = FastAPI(title="LLM Council API")
+security = HTTPBasic()
+
+# Auth password from environment variable
+AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD")
+
+
+def verify_auth(credentials: HTTPBasicCredentials = Depends(security)):
+    """Verify HTTP Basic Auth credentials."""
+    if not AUTH_PASSWORD:
+        # No password set, allow access (for local dev)
+        return True
+
+    # Use secrets.compare_digest to prevent timing attacks
+    password_correct = secrets.compare_digest(
+        credentials.password.encode("utf-8"),
+        AUTH_PASSWORD.encode("utf-8")
+    )
+
+    if not password_correct:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return True
 
 # Get the frontend build directory
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
@@ -98,13 +125,13 @@ async def root():
 
 
 @app.get("/api/conversations", response_model=List[ConversationMetadata])
-async def list_conversations():
+async def list_conversations(auth: bool = Depends(verify_auth)):
     """List all conversations (metadata only)."""
     return storage.list_conversations()
 
 
 @app.post("/api/conversations", response_model=Conversation)
-async def create_conversation(request: CreateConversationRequest):
+async def create_conversation(request: CreateConversationRequest, auth: bool = Depends(verify_auth)):
     """Create a new conversation."""
     conversation_id = str(uuid.uuid4())
     conversation = storage.create_conversation(conversation_id)
@@ -112,7 +139,7 @@ async def create_conversation(request: CreateConversationRequest):
 
 
 @app.get("/api/conversations/{conversation_id}", response_model=Conversation)
-async def get_conversation(conversation_id: str):
+async def get_conversation(conversation_id: str, auth: bool = Depends(verify_auth)):
     """Get a specific conversation with all its messages."""
     conversation = storage.get_conversation(conversation_id)
     if conversation is None:
@@ -121,7 +148,7 @@ async def get_conversation(conversation_id: str):
 
 
 @app.delete("/api/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: str):
+async def delete_conversation(conversation_id: str, auth: bool = Depends(verify_auth)):
     """Delete a specific conversation."""
     deleted = storage.delete_conversation(conversation_id)
     if not deleted:
@@ -130,7 +157,7 @@ async def delete_conversation(conversation_id: str):
 
 
 @app.post("/api/conversations/{conversation_id}/message")
-async def send_message(conversation_id: str, request: SendMessageRequest):
+async def send_message(conversation_id: str, request: SendMessageRequest, auth: bool = Depends(verify_auth)):
     """
     Send a message and run the 3-stage council process.
     Returns the complete response with all stages.
@@ -179,7 +206,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
 
 
 @app.post("/api/conversations/{conversation_id}/message/stream")
-async def send_message_stream(conversation_id: str, request: SendMessageRequest):
+async def send_message_stream(conversation_id: str, request: SendMessageRequest, auth: bool = Depends(verify_auth)):
     """
     Send a message and stream the 3-stage council process.
     Returns Server-Sent Events as each stage completes.
