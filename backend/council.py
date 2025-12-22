@@ -196,12 +196,16 @@ STAGE 1 - Individual Responses:
 STAGE 2 - Peer Rankings:
 {stage2_text}
 
-Your task as Chairman is to synthesize all of this information into a single, comprehensive, accurate answer to the user's original question. Consider:
-- The individual responses and their insights
-- The peer rankings and what they reveal about response quality
-- Any patterns of agreement or disagreement
+Your task as Chairman is to synthesize all of this information into a single, accurate answer to the user's original question.
 
-Provide a clear, well-reasoned final answer that represents the council's collective wisdom:"""
+Guidelines for synthesis:
+- Evaluate the reasoning quality of each response, not just the peer rankings
+- Pay special attention to minority positions—a response ranked lower may still contain the correct insight if others share a common blind spot
+- When models disagree, focus on *why* they disagree and which reasoning is more sound
+- Peer rankings can be wrong in correlated ways (e.g., all models favoring verbose answers, or all missing a subtle error). Be a critical thinker, not a vote counter
+- If one response catches something important that others missed, elevate that insight even if it was ranked poorly
+
+Provide a clear, well-reasoned final answer:"""
 
     messages = [{"role": "user", "content": chairman_prompt}]
 
