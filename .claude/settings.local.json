@@ -9,7 +9,8 @@
       "WebFetch(domain:openrouter.ai)",
       "Bash(uv run python:*)",
       "Bash(npm run dev:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(sleep:*)"
     ]
   }
 }

@@ -7,8 +7,10 @@ import './App.css';
 function App() {
   const [conversations, setConversations] = useState([]);
   const [currentConversationId, setCurrentConversationId] = useState(null);
-  const [currentConversation, setCurrentConversation] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
+  // Cache conversation state per-conversation to preserve streaming state when switching
+  const [conversationCache, setConversationCache] = useState({});
+  // Track which conversations have active streaming
+  const [loadingConversations, setLoadingConversations] = useState({});
 
   // Ref to track current conversation ID for streaming event handlers
   const currentConversationIdRef = useRef(currentConversationId);
@@ -16,14 +18,18 @@ function App() {
     currentConversationIdRef.current = currentConversationId;
   }, [currentConversationId]);
 
+  // Derive current conversation from cache
+  const currentConversation = currentConversationId ? conversationCache[currentConversationId] : null;
+  const isLoading = currentConversationId ? loadingConversations[currentConversationId] : false;
+
   // Load conversations on mount
   useEffect(() => {
     loadConversations();
   }, []);
 
-  // Load conversation details when selected
+  // Load conversation details when selected (only if not already cached or loading)
   useEffect(() => {
-    if (currentConversationId) {
+    if (currentConversationId && !conversationCache[currentConversationId] && !loadingConversations[currentConversationId]) {
       loadConversation(currentConversationId);
     }
   }, [currentConversationId]);
@@ -40,7 +46,7 @@ function App() {
   const loadConversation = async (id) => {
     try {
       const conv = await api.getConversation(id);
-      setCurrentConversation(conv);
+      setConversationCache((prev) => ({ ...prev, [id]: conv }));
     } catch (error) {
       console.error('Failed to load conversation:', error);
     }
@@ -53,6 +59,7 @@ function App() {
         { id: newConv.id, created_at: newConv.created_at, message_count: 0 },
         ...conversations,
       ]);
+      setConversationCache((prev) => ({ ...prev, [newConv.id]: newConv }));
       setCurrentConversationId(newConv.id);
     } catch (error) {
       console.error('Failed to create conversation:', error);
@@ -61,9 +68,7 @@ function App() {
 
   const handleSelectConversation = (id) => {
     setCurrentConversationId(id);
-    // Clear loading state when switching conversations
-    // This allows starting new queries while others process in background
-    setIsLoading(false);
+    // Loading state is now per-conversation, no need to clear globally
   };
 
   const handleDeleteConversation = async (id) => {
@@ -71,10 +76,20 @@ function App() {
       await api.deleteConversation(id);
       // Remove from conversations list
       setConversations(conversations.filter((conv) => conv.id !== id));
-      // If we deleted the current conversation, clear it
+      // Remove from cache
+      setConversationCache((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setLoadingConversations((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      // If we deleted the current conversation, clear selection
       if (currentConversationId === id) {
         setCurrentConversationId(null);
-        setCurrentConversation(null);
       }
     } catch (error) {
       console.error('Failed to delete conversation:', error);
@@ -87,13 +102,16 @@ function App() {
     // Capture the target conversation ID for this request
     const targetConversationId = currentConversationId;
 
-    setIsLoading(true);
+    setLoadingConversations((prev) => ({ ...prev, [targetConversationId]: true }));
     try {
       // Optimistically add user message to UI
       const userMessage = { role: 'user', content };
-      setCurrentConversation((prev) => ({
+      setConversationCache((prev) => ({
         ...prev,
-        messages: [...prev.messages, userMessage],
+        [targetConversationId]: {
+          ...prev[targetConversationId],
+          messages: [...prev[targetConversationId].messages, userMessage],
+        },
       }));
 
       // Create a partial assistant message that will be updated progressively
@@ -111,55 +129,50 @@ function App() {
       };
 
       // Add the partial assistant message
-      setCurrentConversation((prev) => ({
+      setConversationCache((prev) => ({
         ...prev,
-        messages: [...prev.messages, assistantMessage],
+        [targetConversationId]: {
+          ...prev[targetConversationId],
+          messages: [...prev[targetConversationId].messages, assistantMessage],
+        },
       }));
+
+      // Helper to safely update the last assistant message for a specific conversation
+      const safeUpdateLastAssistant = (prev, convId, updateFn) => {
+        const conv = prev[convId];
+        if (!conv?.messages?.length) return prev;
+        const messages = [...conv.messages];
+        const lastMsg = messages[messages.length - 1];
+        // Only update if it's an assistant message with the expected structure
+        if (lastMsg?.role !== 'assistant' || !lastMsg?.loading) return prev;
+        updateFn(lastMsg);
+        return { ...prev, [convId]: { ...conv, messages } };
+      };
 
       // Send message with streaming
       await api.sendMessageStream(targetConversationId, content, (eventType, event) => {
-        // Skip UI updates if user navigated away from this conversation
-        const isStillViewing = currentConversationIdRef.current === targetConversationId;
-
-        // Helper to safely update the last assistant message
-        // Returns prev unchanged if the message structure isn't what we expect
-        // (e.g., user navigated away and back, reloading partial data from backend)
-        const safeUpdateLastAssistant = (prev, updateFn) => {
-          if (!prev?.messages?.length) return prev;
-          const messages = [...prev.messages];
-          const lastMsg = messages[messages.length - 1];
-          // Only update if it's an assistant message with the expected structure
-          if (lastMsg?.role !== 'assistant' || !lastMsg?.loading) return prev;
-          updateFn(lastMsg);
-          return { ...prev, messages };
-        };
-
         switch (eventType) {
           case 'stage1_start':
-            if (!isStillViewing) return;
-            setCurrentConversation((prev) => safeUpdateLastAssistant(prev, (msg) => {
+            setConversationCache((prev) => safeUpdateLastAssistant(prev, targetConversationId, (msg) => {
               msg.loading.stage1 = true;
             }));
             break;
 
           case 'stage1_complete':
-            if (!isStillViewing) return;
-            setCurrentConversation((prev) => safeUpdateLastAssistant(prev, (msg) => {
+            setConversationCache((prev) => safeUpdateLastAssistant(prev, targetConversationId, (msg) => {
               msg.stage1 = event.data;
               msg.loading.stage1 = false;
             }));
             break;
 
           case 'stage2_start':
-            if (!isStillViewing) return;
-            setCurrentConversation((prev) => safeUpdateLastAssistant(prev, (msg) => {
+            setConversationCache((prev) => safeUpdateLastAssistant(prev, targetConversationId, (msg) => {
               msg.loading.stage2 = true;
             }));
             break;
 
           case 'stage2_complete':
-            if (!isStillViewing) return;
-            setCurrentConversation((prev) => safeUpdateLastAssistant(prev, (msg) => {
+            setConversationCache((prev) => safeUpdateLastAssistant(prev, targetConversationId, (msg) => {
               msg.stage2 = event.data;
               msg.metadata = event.metadata;
               msg.loading.stage2 = false;
@@ -167,15 +180,13 @@ function App() {
             break;
 
           case 'stage3_start':
-            if (!isStillViewing) return;
-            setCurrentConversation((prev) => safeUpdateLastAssistant(prev, (msg) => {
+            setConversationCache((prev) => safeUpdateLastAssistant(prev, targetConversationId, (msg) => {
               msg.loading.stage3 = true;
             }));
             break;
 
           case 'stage3_complete':
-            if (!isStillViewing) return;
-            setCurrentConversation((prev) => safeUpdateLastAssistant(prev, (msg) => {
+            setConversationCache((prev) => safeUpdateLastAssistant(prev, targetConversationId, (msg) => {
               msg.stage3 = event.data;
               msg.loading.stage3 = false;
             }));
@@ -189,17 +200,13 @@ function App() {
           case 'complete':
             // Stream complete, reload conversations list
             loadConversations();
-            // Only clear loading state if still viewing this conversation
-            if (isStillViewing) {
-              setIsLoading(false);
-            }
+            // Clear loading state for this conversation
+            setLoadingConversations((prev) => ({ ...prev, [targetConversationId]: false }));
             break;
 
           case 'error':
             console.error('Stream error:', event.message);
-            if (isStillViewing) {
-              setIsLoading(false);
-            }
+            setLoadingConversations((prev) => ({ ...prev, [targetConversationId]: false }));
             break;
 
           default:
@@ -208,14 +215,19 @@ function App() {
       });
     } catch (error) {
       console.error('Failed to send message:', error);
-      // Remove optimistic messages on error (only if still viewing)
-      if (currentConversationIdRef.current === targetConversationId) {
-        setCurrentConversation((prev) => ({
+      // Remove optimistic messages on error
+      setConversationCache((prev) => {
+        const conv = prev[targetConversationId];
+        if (!conv) return prev;
+        return {
           ...prev,
-          messages: prev.messages.slice(0, -2),
-        }));
-        setIsLoading(false);
-      }
+          [targetConversationId]: {
+            ...conv,
+            messages: conv.messages.slice(0, -2),
+          },
+        };
+      });
+      setLoadingConversations((prev) => ({ ...prev, [targetConversationId]: false }));
     }
   };
 
