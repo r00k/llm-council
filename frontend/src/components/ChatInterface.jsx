@@ -6,7 +6,7 @@ import Stage3 from './Stage3';
 import './ChatInterface.css';
 
 // Memoized message component to prevent re-renders when only input state changes
-const Message = memo(function Message({ msg, onRetry, isLoading, stage3Ref }) {
+const Message = memo(function Message({ msg, msgIndex, onRetry, isLoading, stage3Ref }) {
   return (
     <div className="message-group">
       {msg.role === 'user' ? (
@@ -20,7 +20,7 @@ const Message = memo(function Message({ msg, onRetry, isLoading, stage3Ref }) {
             </div>
             <button
               className="retry-button"
-              onClick={() => onRetry(msg.content)}
+              onClick={() => onRetry(msg.content, msgIndex)}
               disabled={isLoading}
               title="Re-run council analysis"
             >
@@ -139,6 +139,7 @@ export default function ChatInterface({
               <Message
                 key={index}
                 msg={msg}
+                msgIndex={index}
                 onRetry={onRetry}
                 isLoading={isLoading}
                 stage3Ref={isLastAssistant ? stage3Ref : null}

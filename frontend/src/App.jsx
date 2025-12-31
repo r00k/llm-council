@@ -231,6 +231,26 @@ function App() {
     }
   };
 
+  const handleRetry = async (content, messageIndex) => {
+    if (!currentConversationId) return;
+
+    // Remove the user message at messageIndex and its following assistant response
+    setConversationCache((prev) => {
+      const conv = prev[currentConversationId];
+      if (!conv) return prev;
+      const messages = [...conv.messages];
+      // Remove user message and the assistant response that follows it
+      messages.splice(messageIndex, 2);
+      return {
+        ...prev,
+        [currentConversationId]: { ...conv, messages },
+      };
+    });
+
+    // Now send the message again
+    await handleSendMessage(content);
+  };
+
   return (
     <div className="app">
       <Sidebar
@@ -243,7 +263,7 @@ function App() {
       <ChatInterface
         conversation={currentConversation}
         onSendMessage={handleSendMessage}
-        onRetry={handleSendMessage}
+        onRetry={handleRetry}
         isLoading={isLoading}
       />
     </div>
