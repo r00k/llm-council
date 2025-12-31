@@ -200,10 +200,10 @@ Your task as Chairman is to synthesize all of this information into a single, ac
 
 Guidelines for synthesis:
 - Evaluate the reasoning quality of each response, not just the peer rankings
-- Pay special attention to minority positions—a response ranked lower may still contain the correct insight if others share a common blind spot
+- Actively hunt for intriguing minority positions—a response ranked lower may contain a genuinely novel insight, creative angle, or correct contrarian take that others missed
 - When models disagree, focus on *why* they disagree and which reasoning is more sound
-- Peer rankings can be wrong in correlated ways (e.g., all models favoring verbose answers, or all missing a subtle error). Be a critical thinker, not a vote counter
-- If one response catches something important that others missed, elevate that insight even if it was ranked poorly
+- Peer rankings can be wrong in correlated ways (e.g., all models favoring verbose answers, conventional wisdom, or safe mainstream takes). Be a critical thinker, not a vote counter
+- If one response offers a provocative or unconventional perspective that is well-reasoned, highlight it prominently in your synthesis—even if it was ranked poorly by peers who may have preferred safer answers
 
 Provide a clear, well-reasoned final answer:"""
 
