@@ -1,8 +1,12 @@
 # AGENTS.md - Technical Notes for LLM Council
 
-Technical details, architectural decisions, and implementation notes.
+## Commands
 
-## Quick Commands
+- **Run tests**: `uv run pytest tests/ -v`
+- **Start backend**: `uv run uvicorn backend.main:app --port 8001`
+- **Start frontend**: `cd frontend && npm run dev`
+
+## Issue Tracking
 
 **Always use `uv run` for Python commands** (system Python doesn't have dependencies):
 
