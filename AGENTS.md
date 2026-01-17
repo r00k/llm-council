@@ -1,5 +1,11 @@
 # AGENTS.md - Technical Notes for LLM Council
 
+## CRITICAL: Do Not Delete User Data
+
+**NEVER delete the database file (`data/conversations/conversations.db`) or any user data.**
+
+When running tests, let migrations run on the existing database - do NOT `rm` the database to get a clean slate. The schema migrations handle upgrades automatically.
+
 ## Commands
 
 - **Run tests**: `uv run pytest tests/ -v`
