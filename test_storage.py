@@ -80,6 +80,42 @@ def test_storage():
     assert deleted is False
     print("✓ Non-existent deletion handled")
 
+    # Test 9: Add turn atomically
+    print("\n9. Testing atomic turn creation...")
+    conv = storage.create_conversation("test-456")
+    storage.add_turn("test-456", "Test question", "turn-001")
+    conv = storage.get_conversation("test-456")
+    assert len(conv["messages"]) == 2  # user + assistant placeholder
+    assert conv["messages"][0]["role"] == "user"
+    assert conv["messages"][0]["content"] == "Test question"
+    assert conv["messages"][1]["role"] == "assistant"
+    print("✓ Atomic turn created")
+
+    # Test 10: Update turn assistant
+    print("\n10. Testing turn assistant update...")
+    storage.update_turn_assistant(
+        "test-456",
+        "turn-001",
+        stage1=[{"model": "gpt-4", "content": "Response"}],
+        stage2=[{"model": "gpt-4", "ranking": ["Response A"]}],
+        stage3={"content": "Final"},
+        metadata={"label_to_model": {"Response A": "gpt-4"}}
+    )
+    conv = storage.get_conversation("test-456")
+    assert conv["messages"][1]["stage3"]["content"] == "Final"
+    print("✓ Turn assistant updated")
+
+    # Test 11: Delete last turn
+    print("\n11. Testing delete last turn...")
+    deleted = storage.delete_last_turn("test-456")
+    assert deleted is True
+    conv = storage.get_conversation("test-456")
+    assert len(conv["messages"]) == 0
+    print("✓ Last turn deleted")
+
+    # Cleanup
+    storage.delete_conversation("test-456")
+
     print("\n✅ All tests passed!")
     return 0
 

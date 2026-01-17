@@ -117,6 +117,7 @@ function App() {
       // Create a partial assistant message that will be updated progressively
       const assistantMessage = {
         role: 'assistant',
+        turn_id: null, // Will be set when we receive turn_start event
         stage1: null,
         stage2: null,
         stage3: null,
@@ -137,42 +138,77 @@ function App() {
         },
       }));
 
-      // Helper to safely update the last assistant message for a specific conversation
-      const safeUpdateLastAssistant = (prev, convId, updateFn) => {
+      // Track the current turn_id for this streaming session
+      let currentTurnId = null;
+
+      // Helper to safely update the assistant message for a specific conversation
+      // Matches by turn_id if available, otherwise falls back to last message
+      const safeUpdateAssistant = (prev, convId, turnId, updateFn) => {
         const conv = prev[convId];
         if (!conv?.messages?.length) return prev;
         const messages = [...conv.messages];
-        const lastMsg = messages[messages.length - 1];
-        // Only update if it's an assistant message with the expected structure
-        if (lastMsg?.role !== 'assistant' || !lastMsg?.loading) return prev;
-        updateFn(lastMsg);
+
+        // Find message by turn_id if available
+        let targetIdx = -1;
+        if (turnId) {
+          targetIdx = messages.findIndex(
+            (m) => m.role === 'assistant' && m.turn_id === turnId
+          );
+        }
+        // Fallback to last assistant message with loading state
+        if (targetIdx === -1) {
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i]?.role === 'assistant' && messages[i]?.loading) {
+              targetIdx = i;
+              break;
+            }
+          }
+        }
+        if (targetIdx === -1) return prev;
+
+        const msg = { ...messages[targetIdx] };
+        updateFn(msg);
+        messages[targetIdx] = msg;
         return { ...prev, [convId]: { ...conv, messages } };
       };
 
       // Send message with streaming
       await api.sendMessageStream(targetConversationId, content, (eventType, event) => {
+        // Capture turn_id from first event that has it
+        if (event.turn_id && !currentTurnId) {
+          currentTurnId = event.turn_id;
+          // Update the placeholder with the turn_id
+          setConversationCache((prev) => safeUpdateAssistant(prev, targetConversationId, null, (msg) => {
+            msg.turn_id = event.turn_id;
+          }));
+        }
+
         switch (eventType) {
+          case 'turn_start':
+            // Already handled above
+            break;
+
           case 'stage1_start':
-            setConversationCache((prev) => safeUpdateLastAssistant(prev, targetConversationId, (msg) => {
+            setConversationCache((prev) => safeUpdateAssistant(prev, targetConversationId, currentTurnId, (msg) => {
               msg.loading.stage1 = true;
             }));
             break;
 
           case 'stage1_complete':
-            setConversationCache((prev) => safeUpdateLastAssistant(prev, targetConversationId, (msg) => {
+            setConversationCache((prev) => safeUpdateAssistant(prev, targetConversationId, currentTurnId, (msg) => {
               msg.stage1 = event.data;
               msg.loading.stage1 = false;
             }));
             break;
 
           case 'stage2_start':
-            setConversationCache((prev) => safeUpdateLastAssistant(prev, targetConversationId, (msg) => {
+            setConversationCache((prev) => safeUpdateAssistant(prev, targetConversationId, currentTurnId, (msg) => {
               msg.loading.stage2 = true;
             }));
             break;
 
           case 'stage2_complete':
-            setConversationCache((prev) => safeUpdateLastAssistant(prev, targetConversationId, (msg) => {
+            setConversationCache((prev) => safeUpdateAssistant(prev, targetConversationId, currentTurnId, (msg) => {
               msg.stage2 = event.data;
               msg.metadata = event.metadata;
               msg.loading.stage2 = false;
@@ -180,13 +216,13 @@ function App() {
             break;
 
           case 'stage3_start':
-            setConversationCache((prev) => safeUpdateLastAssistant(prev, targetConversationId, (msg) => {
+            setConversationCache((prev) => safeUpdateAssistant(prev, targetConversationId, currentTurnId, (msg) => {
               msg.loading.stage3 = true;
             }));
             break;
 
           case 'stage3_complete':
-            setConversationCache((prev) => safeUpdateLastAssistant(prev, targetConversationId, (msg) => {
+            setConversationCache((prev) => safeUpdateAssistant(prev, targetConversationId, currentTurnId, (msg) => {
               msg.stage3 = event.data;
               msg.loading.stage3 = false;
             }));
@@ -234,21 +270,28 @@ function App() {
   const handleRetry = async (content, messageIndex) => {
     if (!currentConversationId) return;
 
-    // Remove the user message at messageIndex and its following assistant response
-    setConversationCache((prev) => {
-      const conv = prev[currentConversationId];
-      if (!conv) return prev;
-      const messages = [...conv.messages];
-      // Remove user message and the assistant response that follows it
-      messages.splice(messageIndex, 2);
-      return {
-        ...prev,
-        [currentConversationId]: { ...conv, messages },
-      };
-    });
+    try {
+      // First, delete the last turn from the backend to stay in sync
+      await api.deleteLastTurn(currentConversationId);
 
-    // Now send the message again
-    await handleSendMessage(content);
+      // Remove the user message at messageIndex and its following assistant response from UI
+      setConversationCache((prev) => {
+        const conv = prev[currentConversationId];
+        if (!conv) return prev;
+        const messages = [...conv.messages];
+        // Remove user message and the assistant response that follows it
+        messages.splice(messageIndex, 2);
+        return {
+          ...prev,
+          [currentConversationId]: { ...conv, messages },
+        };
+      });
+
+      // Now send the message again
+      await handleSendMessage(content);
+    } catch (error) {
+      console.error('Failed to retry:', error);
+    }
   };
 
   return (

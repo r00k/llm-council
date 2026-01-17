@@ -17,8 +17,25 @@ from pathlib import Path
 
 from . import storage
 from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
+from .openrouter import cleanup_client
 
 app = FastAPI(title="LLM Council API")
+
+# Per-conversation locks to prevent race conditions
+_conversation_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _get_conversation_lock(conversation_id: str) -> asyncio.Lock:
+    """Get or create a lock for a conversation."""
+    if conversation_id not in _conversation_locks:
+        _conversation_locks[conversation_id] = asyncio.Lock()
+    return _conversation_locks[conversation_id]
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up resources on shutdown."""
+    await cleanup_client()
 
 # Auth password from environment variable
 AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD")
@@ -216,47 +233,58 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     Send a message and run the 3-stage council process.
     Returns the complete response with all stages.
     """
-    # Check if conversation exists
-    conversation = storage.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    # Acquire per-conversation lock to prevent race conditions
+    lock = _get_conversation_lock(conversation_id)
+    async with lock:
+        # Check if conversation exists
+        conversation = storage.get_conversation(conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
 
-    # Check if this is the first message
-    is_first_message = len(conversation["messages"]) == 0
+        # Check if this is the first message
+        is_first_message = len(conversation["messages"]) == 0
 
-    # Build conversation history from previous messages (before adding new user message)
-    conversation_history = build_conversation_history(conversation["messages"])
+        # Build conversation history from previous messages (before adding new user message)
+        conversation_history = build_conversation_history(conversation["messages"])
 
-    # Add user message
-    storage.add_user_message(conversation_id, request.content)
+        # Generate turn_id and add user+assistant atomically
+        turn_id = str(uuid.uuid4())
+        storage.add_turn(conversation_id, request.content, turn_id)
 
-    # If this is the first message, generate a title
-    if is_first_message:
-        title = await generate_conversation_title(request.content)
-        storage.update_conversation_title(conversation_id, title)
+        try:
+            # If this is the first message, generate a title
+            if is_first_message:
+                title = await generate_conversation_title(request.content)
+                storage.update_conversation_title(conversation_id, title)
 
-    # Run the 3-stage council process with conversation history
-    stage1_results, stage2_results, stage3_result, metadata = await run_full_council(
-        request.content,
-        conversation_history if conversation_history else None
-    )
+            # Run the 3-stage council process with conversation history
+            stage1_results, stage2_results, stage3_result, metadata = await run_full_council(
+                request.content,
+                conversation_history if conversation_history else None
+            )
 
-    # Add assistant message with all stages and metadata
-    storage.add_assistant_message(
-        conversation_id,
-        stage1_results,
-        stage2_results,
-        stage3_result,
-        metadata
-    )
+            # Update the assistant message with completed data
+            storage.update_turn_assistant(
+                conversation_id,
+                turn_id,
+                stage1_results,
+                stage2_results,
+                stage3_result,
+                metadata
+            )
 
-    # Return the complete response with metadata
-    return {
-        "stage1": stage1_results,
-        "stage2": stage2_results,
-        "stage3": stage3_result,
-        "metadata": metadata
-    }
+            # Return the complete response with metadata
+            return {
+                "turn_id": turn_id,
+                "stage1": stage1_results,
+                "stage2": stage2_results,
+                "stage3": stage3_result,
+                "metadata": metadata
+            }
+        except Exception as e:
+            # Mark turn as error
+            storage.mark_turn_error(conversation_id, turn_id, str(e))
+            raise
 
 
 @app.post("/api/conversations/{conversation_id}/message/stream")
@@ -277,57 +305,68 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     conversation_history = build_conversation_history(conversation["messages"])
     history_for_council = conversation_history if conversation_history else None
 
+    # Generate turn_id upfront
+    turn_id = str(uuid.uuid4())
+
     async def event_generator():
-        try:
-            # Add user message
-            storage.add_user_message(conversation_id, request.content)
+        # Acquire lock inside generator to hold it during streaming
+        lock = _get_conversation_lock(conversation_id)
+        async with lock:
+            try:
+                # Add user+assistant atomically at the START
+                storage.add_turn(conversation_id, request.content, turn_id)
 
-            # Start title generation in parallel (don't await yet)
-            title_task = None
-            if is_first_message:
-                title_task = asyncio.create_task(generate_conversation_title(request.content))
+                # Send turn_id to frontend for correlation
+                yield f"data: {json.dumps({'type': 'turn_start', 'turn_id': turn_id})}\n\n"
 
-            # Stage 1: Collect responses
-            yield f"data: {json.dumps({'type': 'stage1_start'})}\n\n"
-            stage1_results = await stage1_collect_responses(request.content, history_for_council)
-            yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results})}\n\n"
+                # Start title generation in parallel (don't await yet)
+                title_task = None
+                if is_first_message:
+                    title_task = asyncio.create_task(generate_conversation_title(request.content))
 
-            # Stage 2: Collect rankings
-            yield f"data: {json.dumps({'type': 'stage2_start'})}\n\n"
-            stage2_results, label_to_model = await stage2_collect_rankings(request.content, stage1_results, history_for_council)
-            aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
-            yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': {'label_to_model': label_to_model, 'aggregate_rankings': aggregate_rankings}})}\n\n"
+                # Stage 1: Collect responses
+                yield f"data: {json.dumps({'type': 'stage1_start', 'turn_id': turn_id})}\n\n"
+                stage1_results = await stage1_collect_responses(request.content, history_for_council)
+                yield f"data: {json.dumps({'type': 'stage1_complete', 'turn_id': turn_id, 'data': stage1_results})}\n\n"
 
-            # Stage 3: Synthesize final answer
-            yield f"data: {json.dumps({'type': 'stage3_start'})}\n\n"
-            stage3_result = await stage3_synthesize_final(request.content, stage1_results, stage2_results, history_for_council)
-            yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result})}\n\n"
+                # Stage 2: Collect rankings
+                yield f"data: {json.dumps({'type': 'stage2_start', 'turn_id': turn_id})}\n\n"
+                stage2_results, label_to_model = await stage2_collect_rankings(request.content, stage1_results, history_for_council)
+                aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
+                yield f"data: {json.dumps({'type': 'stage2_complete', 'turn_id': turn_id, 'data': stage2_results, 'metadata': {'label_to_model': label_to_model, 'aggregate_rankings': aggregate_rankings}})}\n\n"
 
-            # Wait for title generation if it was started
-            if title_task:
-                title = await title_task
-                storage.update_conversation_title(conversation_id, title)
-                yield f"data: {json.dumps({'type': 'title_complete', 'data': {'title': title}})}\n\n"
+                # Stage 3: Synthesize final answer
+                yield f"data: {json.dumps({'type': 'stage3_start', 'turn_id': turn_id})}\n\n"
+                stage3_result = await stage3_synthesize_final(request.content, stage1_results, stage2_results, history_for_council)
+                yield f"data: {json.dumps({'type': 'stage3_complete', 'turn_id': turn_id, 'data': stage3_result})}\n\n"
 
-            # Save complete assistant message with metadata
-            metadata = {
-                'label_to_model': label_to_model,
-                'aggregate_rankings': aggregate_rankings
-            }
-            storage.add_assistant_message(
-                conversation_id,
-                stage1_results,
-                stage2_results,
-                stage3_result,
-                metadata
-            )
+                # Wait for title generation if it was started
+                if title_task:
+                    title = await title_task
+                    storage.update_conversation_title(conversation_id, title)
+                    yield f"data: {json.dumps({'type': 'title_complete', 'turn_id': turn_id, 'data': {'title': title}})}\n\n"
 
-            # Send completion event
-            yield f"data: {json.dumps({'type': 'complete'})}\n\n"
+                # Update assistant message with completed data
+                metadata = {
+                    'label_to_model': label_to_model,
+                    'aggregate_rankings': aggregate_rankings
+                }
+                storage.update_turn_assistant(
+                    conversation_id,
+                    turn_id,
+                    stage1_results,
+                    stage2_results,
+                    stage3_result,
+                    metadata
+                )
 
-        except Exception as e:
-            # Send error event
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                # Send completion event
+                yield f"data: {json.dumps({'type': 'complete', 'turn_id': turn_id})}\n\n"
+
+            except Exception as e:
+                # Mark turn as error and send error event
+                storage.mark_turn_error(conversation_id, turn_id, str(e))
+                yield f"data: {json.dumps({'type': 'error', 'turn_id': turn_id, 'message': str(e)})}\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -337,6 +376,17 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             "Connection": "keep-alive",
         }
     )
+
+
+@app.delete("/api/conversations/{conversation_id}/turns/last")
+async def delete_last_turn(conversation_id: str):
+    """Delete the last user+assistant turn pair for retry functionality."""
+    lock = _get_conversation_lock(conversation_id)
+    async with lock:
+        deleted = storage.delete_last_turn(conversation_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="No turns to delete")
+        return {"status": "deleted"}
 
 
 # Mount static files for production (frontend build)

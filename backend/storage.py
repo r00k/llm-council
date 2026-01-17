@@ -272,3 +272,167 @@ def delete_conversation(conversation_id: str) -> bool:
         return cursor.rowcount > 0
     finally:
         conn.close()
+
+
+def add_turn(conversation_id: str, user_content: str, turn_id: str):
+    """
+    Add a user message AND assistant placeholder atomically.
+    
+    This ensures we never have a dangling user message without an assistant response.
+    
+    Args:
+        conversation_id: Conversation identifier
+        user_content: User message content
+        turn_id: Unique identifier linking the user/assistant pair
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "SELECT id FROM conversations WHERE id = ?",
+            (conversation_id,)
+        )
+        if cursor.fetchone() is None:
+            raise ValueError(f"Conversation {conversation_id} not found")
+        
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, turn_id, status) VALUES (?, ?, ?, ?, ?)",
+            (conversation_id, "user", user_content, turn_id, "running")
+        )
+        conn.execute(
+            """
+            INSERT INTO messages 
+            (conversation_id, role, turn_id, status, stage1_json, stage2_json, stage3_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (conversation_id, "assistant", turn_id, "running", "[]", "[]", "{}")
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_turn_assistant(
+    conversation_id: str,
+    turn_id: str,
+    stage1: List[Dict[str, Any]],
+    stage2: List[Dict[str, Any]],
+    stage3: Dict[str, Any],
+    metadata: Optional[Dict[str, Any]] = None,
+    status: str = "complete"
+):
+    """
+    Update the assistant message for a turn with completed data.
+    
+    Args:
+        conversation_id: Conversation identifier
+        turn_id: Turn identifier
+        stage1: List of individual model responses
+        stage2: List of model rankings
+        stage3: Final synthesized response
+        metadata: Optional metadata including label_to_model mapping
+        status: Status to set ('complete' or 'error')
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE messages 
+            SET stage1_json = ?, stage2_json = ?, stage3_json = ?, metadata_json = ?, status = ?
+            WHERE conversation_id = ? AND turn_id = ? AND role = 'assistant'
+            """,
+            (
+                json.dumps(stage1),
+                json.dumps(stage2),
+                json.dumps(stage3),
+                json.dumps(metadata) if metadata else None,
+                status,
+                conversation_id,
+                turn_id
+            )
+        )
+        conn.execute(
+            "UPDATE messages SET status = ? WHERE conversation_id = ? AND turn_id = ? AND role = 'user'",
+            (status, conversation_id, turn_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_turn_error(conversation_id: str, turn_id: str, error_message: str):
+    """
+    Mark a turn as failed with an error message.
+    
+    Args:
+        conversation_id: Conversation identifier
+        turn_id: Turn identifier
+        error_message: Error message to store
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE messages 
+            SET status = 'error', metadata_json = ?
+            WHERE conversation_id = ? AND turn_id = ?
+            """,
+            (json.dumps({"error": error_message}), conversation_id, turn_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_last_turn(conversation_id: str) -> bool:
+    """
+    Delete the last user+assistant turn pair from a conversation.
+    
+    Args:
+        conversation_id: Conversation identifier
+        
+    Returns:
+        True if a turn was deleted, False if no turns found
+    """
+    conn = get_connection()
+    try:
+        # Try to find the last turn by turn_id
+        cursor = conn.execute(
+            """
+            SELECT turn_id FROM messages 
+            WHERE conversation_id = ? AND role = 'assistant'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (conversation_id,)
+        )
+        row = cursor.fetchone()
+        
+        if row is not None and row["turn_id"] is not None:
+            # Delete by turn_id
+            turn_id = row["turn_id"]
+            conn.execute(
+                "DELETE FROM messages WHERE conversation_id = ? AND turn_id = ?",
+                (conversation_id, turn_id)
+            )
+            conn.commit()
+            return True
+        
+        # Fallback: delete last 2 messages (for old data without turn_id)
+        cursor = conn.execute(
+            """
+            SELECT id FROM messages 
+            WHERE conversation_id = ?
+            ORDER BY id DESC LIMIT 2
+            """,
+            (conversation_id,)
+        )
+        rows = cursor.fetchall()
+        if len(rows) >= 2:
+            conn.execute(
+                "DELETE FROM messages WHERE id IN (?, ?)",
+                (rows[0]["id"], rows[1]["id"])
+            )
+            conn.commit()
+            return True
+        return False
+    finally:
+        conn.close()

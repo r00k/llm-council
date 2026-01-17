@@ -34,8 +34,24 @@ def init_db():
     try:
         conn.executescript(schema_sql)
         conn.commit()
+        # Run migrations for new columns
+        _migrate_add_turn_columns(conn)
     finally:
         conn.close()
+
+
+def _migrate_add_turn_columns(conn: sqlite3.Connection):
+    """Add turn_id and status columns if they don't exist."""
+    cursor = conn.execute("PRAGMA table_info(messages)")
+    columns = {row[1] for row in cursor.fetchall()}
+    
+    if 'turn_id' not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN turn_id TEXT")
+        conn.commit()
+    
+    if 'status' not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN status TEXT CHECK (status IN ('running', 'complete', 'error'))")
+        conn.commit()
 
 
 # Initialize database on module import

@@ -110,25 +110,56 @@ export const api = {
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    let buffer = '';
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n');
+      // Append decoded chunk to buffer
+      buffer += decoder.decode(value, { stream: true });
 
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
+      // SSE events are delimited by \n\n
+      const events = buffer.split('\n\n');
+      // Keep incomplete event in buffer
+      buffer = events.pop() || '';
+
+      for (const eventBlock of events) {
+        if (!eventBlock.trim()) continue;
+
+        // Extract all data: lines and concatenate
+        const dataLines = eventBlock
+          .split('\n')
+          .filter((line) => line.startsWith('data: '))
+          .map((line) => line.slice(6));
+
+        if (dataLines.length > 0) {
+          const data = dataLines.join('');
           try {
             const event = JSON.parse(data);
             onEvent(event.type, event);
           } catch (e) {
-            console.error('Failed to parse SSE event:', e);
+            console.error('Failed to parse SSE event:', e, data);
           }
         }
       }
     }
+  },
+
+  /**
+   * Delete the last turn (user + assistant pair) from a conversation.
+   * Used for retry functionality.
+   */
+  async deleteLastTurn(conversationId) {
+    const response = await fetch(
+      `${API_BASE}/api/conversations/${conversationId}/turns/last`,
+      {
+        method: 'DELETE',
+      }
+    );
+    if (!response.ok) {
+      throw new Error('Failed to delete last turn');
+    }
+    return response.json();
   },
 };

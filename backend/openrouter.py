@@ -4,6 +4,25 @@ import httpx
 from typing import List, Dict, Any, Optional
 from .config import OPENROUTER_API_KEY, OPENROUTER_API_URL
 
+# Module-level shared client for connection pooling
+_http_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_client(timeout: float = 120.0) -> httpx.AsyncClient:
+    """Get or create the shared httpx client."""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=timeout)
+    return _http_client
+
+
+async def cleanup_client():
+    """Close the shared httpx client. Call on app shutdown."""
+    global _http_client
+    if _http_client is not None and not _http_client.is_closed:
+        await _http_client.aclose()
+        _http_client = None
+
 
 async def query_model(
     model: str,
@@ -32,21 +51,21 @@ async def query_model(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                OPENROUTER_API_URL,
-                headers=headers,
-                json=payload
-            )
-            response.raise_for_status()
+        client = _get_client(timeout)
+        response = await client.post(
+            OPENROUTER_API_URL,
+            headers=headers,
+            json=payload
+        )
+        response.raise_for_status()
 
-            data = response.json()
-            message = data['choices'][0]['message']
+        data = response.json()
+        message = data['choices'][0]['message']
 
-            return {
-                'content': message.get('content'),
-                'reasoning_details': message.get('reasoning_details')
-            }
+        return {
+            'content': message.get('content'),
+            'reasoning_details': message.get('reasoning_details')
+        }
 
     except Exception as e:
         print(f"Error querying model {model}: {e}")
