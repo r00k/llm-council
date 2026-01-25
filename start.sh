@@ -16,6 +16,14 @@ sleep 2
 # Start frontend
 echo "Starting frontend on http://localhost:5173..."
 cd frontend
+
+# Check if node_modules exists
+if [ ! -d "node_modules" ]; then
+    echo ""
+    echo "⚠ Frontend dependencies not installed. Running 'npm install'..."
+    npm install
+fi
+
 npm run dev &
 FRONTEND_PID=$!
 
